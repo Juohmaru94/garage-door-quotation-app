@@ -28,7 +28,7 @@ model PaintPrice {
 }
 
 model Quotation {
-  id               String   @id @default(cuid())
+  id               Int      @id @default(autoincrement())
   customerName     String
   customerPhone    String?
   customerEmail    String?
@@ -51,5 +51,49 @@ model Quotation {
   totalCost        Float
   totalSellPrice   Float
   notes            String?
+  status           String   @default("PENDING")
+  acceptedAt       DateTime?
   createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  order            Order?
+  items            QuotationItem[]
+}
+
+model Order {
+  id          Int       @id @default(autoincrement())
+  quotationId Int      @unique
+  quotation   Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  customerName String
+  acceptedAt  DateTime
+  finishedAt  DateTime?
+  status      String    @default("IN_PROGRESS")
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model QuotationItem {
+  id               Int      @id @default(autoincrement())
+  quotationId      Int
+  quotation        Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  widthCm          Float
+  heightCm         Float
+  rollerType       String
+  painted          Boolean  @default(false)
+  guides           String
+  boxType          String
+  tamplas          Boolean  @default(false)
+  boxCaps          Boolean  @default(false)
+  strantza         String
+  motor            String
+  remoteSet        Boolean  @default(false)
+  photocells       Boolean  @default(false)
+  blidoor          Boolean  @default(false)
+  switch           Boolean  @default(false)
+  locks            Boolean  @default(false)
+  installationCost Float    @default(0)
+  notes            String?
+  sortOrder        Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }

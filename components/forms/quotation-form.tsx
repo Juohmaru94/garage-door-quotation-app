@@ -1,13 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
+import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Calculator, RotateCcw, Save, ScrollText } from "lucide-react";
-import { z } from "zod";
+import { Calculator, Edit, Plus, RotateCcw, Save, ScrollText, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,68 +18,40 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   calculateQuotation,
   formatCurrency,
+  roundMoney,
   type PricingMaterial,
   type PricingPaintPrice,
   type QuotationCalculationInput,
+  type QuotationCalculationResult,
 } from "@/lib/calculations/quotationCalculator";
 import { boxOptions, guideOptions, motorOptions, rollerTypeOptions, strantzaOptions } from "@/lib/pricing/initialPricing";
-
-const quotationSchema = z.object({
-  customerName: z.string().trim().min(1, "Συμπληρώστε όνομα πελάτη"),
-  customerPhone: z.string().trim().optional(),
-  customerEmail: z.string().trim().email("Συμπληρώστε σωστό email").or(z.literal("")).optional(),
-  widthCm: z.number({ error: "Το πλάτος πρέπει να είναι αριθμός" }).positive("Το πλάτος πρέπει να είναι μεγαλύτερο από 0"),
-  heightCm: z.number({ error: "Το ύψος πρέπει να είναι αριθμός" }).positive("Το ύψος πρέπει να είναι μεγαλύτερο από 0"),
-  rollerType: z.string().min(1),
-  painted: z.boolean(),
-  guides: z.string().min(1),
-  boxType: z.string().min(1),
-  tamplas: z.boolean(),
-  boxCaps: z.boolean(),
-  strantza: z.string().min(1),
-  motor: z.string().min(1),
-  remoteSet: z.boolean(),
-  photocells: z.boolean(),
-  blidoor: z.boolean(),
-  switch: z.boolean(),
-  locks: z.boolean(),
-  installationCost: z.number({ error: "Η τοποθέτηση πρέπει να είναι αριθμός" }).min(0, "Η τοποθέτηση δεν μπορεί να είναι αρνητική"),
-  notes: z.string().trim().optional(),
-});
-
-type QuotationFormValues = z.infer<typeof quotationSchema>;
-
-const defaultValues: QuotationFormValues = {
-  customerName: "",
-  customerPhone: "",
-  customerEmail: "",
-  widthCm: 300,
-  heightCm: 250,
-  rollerType: rollerTypeOptions[0],
-  painted: false,
-  guides: guideOptions[0],
-  boxType: "ΟΧΙ",
-  tamplas: false,
-  boxCaps: false,
-  strantza: "ΟΧΙ",
-  motor: "ΟΧΙ",
-  remoteSet: false,
-  photocells: false,
-  blidoor: false,
-  switch: false,
-  locks: false,
-  installationCost: 0,
-  notes: "",
-};
+import {
+  defaultQuotationItemValues,
+  defaultQuotationValues,
+  quotationCustomerSchema,
+  quotationItemSchema,
+  type QuotationFormValues,
+  type QuotationItemValues,
+} from "@/lib/validation/quotation";
 
 type QuotationFormProps = {
   materials: PricingMaterial[];
   paintPrices: PricingPaintPrice[];
+  initialValues?: QuotationFormValues;
+  mode: "create" | "edit";
+  onSave: (values: QuotationFormValues) => Promise<{ ok: boolean; message: string }>;
+  onCancel?: () => void;
+};
+
+type CustomerValues = {
+  customerName: string;
+  customerPhone: string;
+  customerEmail?: string;
 };
 
 type ToggleFieldName = "painted" | "tamplas" | "boxCaps" | "remoteSet" | "photocells" | "blidoor" | "switch" | "locks";
 
-function toCalculationInput(values: QuotationFormValues): QuotationCalculationInput {
+function toCalculationInput(values: QuotationItemValues): QuotationCalculationInput {
   return {
     widthCm: Number(values.widthCm) || 0,
     heightCm: Number(values.heightCm) || 0,
@@ -99,38 +72,143 @@ function toCalculationInput(values: QuotationFormValues): QuotationCalculationIn
   };
 }
 
-export function QuotationForm({ materials, paintPrices }: QuotationFormProps) {
-  const {
-    control,
-    register,
-    reset,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<QuotationFormValues>({
-    resolver: zodResolver(quotationSchema),
-    defaultValues,
-    mode: "onChange",
+function calculateItems(
+  items: QuotationItemValues[],
+  materials: PricingMaterial[],
+  paintPrices: PricingPaintPrice[],
+): QuotationCalculationResult[] {
+  return items.map((item) => calculateQuotation(toCalculationInput(item), materials, paintPrices));
+}
+
+function summarizeCalculations(calculations: QuotationCalculationResult[]) {
+  const totalCost = roundMoney(calculations.reduce((sum, calculation) => sum + calculation.totalCost, 0));
+  const totalSellPrice = roundMoney(calculations.reduce((sum, calculation) => sum + calculation.totalSellPrice, 0));
+  const profit = roundMoney(totalSellPrice - totalCost);
+  const profitMargin = totalSellPrice > 0 ? roundMoney((profit / totalSellPrice) * 100) : 0;
+
+  return { totalCost, totalSellPrice, profit, profitMargin };
+}
+
+function getInitialItems(values: QuotationFormValues): QuotationItemValues[] {
+  if (values.items.length > 0) {
+    return values.items;
+  }
+
+  if (values.customerName) {
+    return [
+      {
+        widthCm: values.widthCm,
+        heightCm: values.heightCm,
+        rollerType: values.rollerType,
+        painted: values.painted,
+        guides: values.guides,
+        boxType: values.boxType,
+        tamplas: values.tamplas,
+        boxCaps: values.boxCaps,
+        strantza: values.strantza,
+        motor: values.motor,
+        remoteSet: values.remoteSet,
+        photocells: values.photocells,
+        blidoor: values.blidoor,
+        switch: values.switch,
+        locks: values.locks,
+        installationCost: values.installationCost,
+        notes: values.notes,
+      },
+    ];
+  }
+
+  return [];
+}
+
+export function QuotationForm({ materials, paintPrices, initialValues, mode, onSave, onCancel }: QuotationFormProps) {
+  const resolvedInitialValues = useMemo(() => initialValues ?? defaultQuotationValues, [initialValues]);
+  const [customer, setCustomer] = useState<CustomerValues>({
+    customerName: resolvedInitialValues.customerName,
+    customerPhone: resolvedInitialValues.customerPhone,
+    customerEmail: resolvedInitialValues.customerEmail,
   });
+  const [items, setItems] = useState<QuotationItemValues[]>(() => getInitialItems(resolvedInitialValues));
+  const [isCustomerReady, setIsCustomerReady] = useState(mode === "edit");
+  const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
+  const [itemDialogOpen, setItemDialogOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
-  const values = useWatch({ control }) as QuotationFormValues;
-  const calculation = useMemo(
-    () => calculateQuotation(toCalculationInput({ ...defaultValues, ...values }), materials, paintPrices),
-    [materials, paintPrices, values],
-  );
+  useEffect(() => {
+    setCustomer({
+      customerName: resolvedInitialValues.customerName,
+      customerPhone: resolvedInitialValues.customerPhone,
+      customerEmail: resolvedInitialValues.customerEmail,
+    });
+    setItems(getInitialItems(resolvedInitialValues));
+    setIsCustomerReady(mode === "edit");
+    setMessage("");
+  }, [mode, resolvedInitialValues]);
 
-  const onSubmit = (data: QuotationFormValues) => {
-    const result = calculateQuotation(toCalculationInput(data), materials, paintPrices);
-    window.alert(`Η προσφορά υπολογίστηκε: ${formatCurrency(result.totalSellPrice)}`);
+  const calculations = useMemo(() => calculateItems(items, materials, paintPrices), [items, materials, paintPrices]);
+  const totals = useMemo(() => summarizeCalculations(calculations), [calculations]);
+
+  const openNewItem = () => {
+    setEditingItemIndex(null);
+    setItemDialogOpen(true);
   };
 
-  const resetWithConfirmation = () => {
-    if (window.confirm("Θέλετε σίγουρα να καθαρίσετε τη φόρμα;")) {
-      reset(defaultValues);
+  const openExistingItem = (index: number) => {
+    setEditingItemIndex(index);
+    setItemDialogOpen(true);
+  };
+
+  const saveItem = (item: QuotationItemValues) => {
+    setItems((current) => {
+      if (editingItemIndex === null) {
+        return [...current, item];
+      }
+
+      return current.map((existingItem, index) => (index === editingItemIndex ? item : existingItem));
+    });
+    setItemDialogOpen(false);
+  };
+
+  const removeItem = (index: number) => {
+    setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const saveQuotation = async () => {
+    setIsSaving(true);
+    setMessage("");
+    const primaryItem = items[0] ?? defaultQuotationItemValues;
+    const result = await onSave({
+      ...defaultQuotationValues,
+      ...customer,
+      ...primaryItem,
+      items,
+    });
+    setIsSaving(false);
+    setMessage(result.message);
+
+    if (result.ok && mode === "create") {
+      setCustomer({ customerName: "", customerPhone: "", customerEmail: "" });
+      setItems([]);
+      setIsCustomerReady(false);
     }
   };
 
+  if (!isCustomerReady) {
+    return (
+      <CustomerPrompt
+        initialValues={customer}
+        onCancel={onCancel}
+        onContinue={(values) => {
+          setCustomer(values);
+          setIsCustomerReady(true);
+        }}
+      />
+    );
+  }
+
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
       <div className="space-y-6">
         <Card>
           <CardHeader>
@@ -139,22 +217,267 @@ export function QuotationForm({ materials, paintPrices }: QuotationFormProps) {
                 <CardTitle>Στοιχεία πελάτη</CardTitle>
                 <CardDescription>Βασικές πληροφορίες για την προσφορά.</CardDescription>
               </div>
-              <Badge>Νέα προσφορά</Badge>
+              <Badge>{mode === "create" ? "Νέα προσφορά" : "Επεξεργασία"}</Badge>
             </div>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-3">
-            <Field label="Πελάτης" error={errors.customerName?.message}>
-              <Input {...register("customerName")} placeholder="Ονοματεπώνυμο" />
-            </Field>
-            <Field label="Τηλέφωνο" error={errors.customerPhone?.message}>
-              <Input {...register("customerPhone")} placeholder="210 0000000" />
-            </Field>
-            <Field label="Email" error={errors.customerEmail?.message}>
-              <Input {...register("customerEmail")} placeholder="customer@example.com" />
-            </Field>
+            <EditableCustomerField label="Πελάτης" value={customer.customerName} onChange={(value) => setCustomer((current) => ({ ...current, customerName: value }))} />
+            <EditableCustomerField label="Τηλέφωνο" value={customer.customerPhone} onChange={(value) => setCustomer((current) => ({ ...current, customerPhone: value }))} />
+            <EditableCustomerField label="Email" value={customer.customerEmail ?? ""} onChange={(value) => setCustomer((current) => ({ ...current, customerEmail: value }))} />
           </CardContent>
         </Card>
 
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardTitle>Είδη προσφοράς</CardTitle>
+              <CardDescription>Προσθέστε όσα ρολά ή εξαρτήματα χρειάζεται ο πελάτης.</CardDescription>
+            </div>
+            <Button type="button" size="icon" className="h-12 w-12 rounded-full bg-emerald-600 text-white shadow-md hover:bg-emerald-700" onClick={openNewItem}>
+              <Plus className="h-6 w-6" />
+              <span className="sr-only">Προσθήκη είδους</span>
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {items.length === 0 ? (
+              <button
+                type="button"
+                onClick={openNewItem}
+                className="flex min-h-56 w-full cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-emerald-200 bg-emerald-50/60 text-center transition hover:border-emerald-400 hover:bg-emerald-50"
+              >
+                <span className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-600 text-white shadow-md">
+                  <Plus className="h-9 w-9" />
+                </span>
+                <span className="mt-4 text-base font-semibold text-slate-900">Προσθήκη πρώτου είδους</span>
+                <span className="mt-1 text-sm text-slate-500">Η λίστα είναι κενή.</span>
+              </button>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Είδος</TableHead>
+                    <TableHead>Διαστάσεις</TableHead>
+                    <TableHead className="text-right">Τιμή</TableHead>
+                    <TableHead className="text-right">Ενέργειες</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {items.map((item, index) => {
+                    const calculation = calculations[index];
+
+                    return (
+                      <TableRow key={`${item.rollerType}-${index}`}>
+                        <TableCell>
+                          <div className="font-medium text-slate-900">{item.rollerType}</div>
+                          <div className="text-xs text-slate-500">{calculation.lineItems.length} γραμμές ανάλυσης</div>
+                        </TableCell>
+                        <TableCell>{`${item.widthCm} x ${item.heightCm} cm`}</TableCell>
+                        <TableCell className="text-right font-semibold">{formatCurrency(calculation.totalSellPrice)}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button type="button" variant="outline" size="sm" onClick={() => openExistingItem(index)}>
+                              <Edit className="h-4 w-4" />
+                              Επεξεργασία
+                            </Button>
+                            <Button type="button" variant="outline" size="icon" onClick={() => removeItem(index)}>
+                              <Trash2 className="h-4 w-4" />
+                              <span className="sr-only">Διαγραφή είδους</span>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <aside className="space-y-6 xl:sticky xl:top-6 xl:self-start">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Calculator className="h-5 w-5 text-emerald-600" />
+              Σύνοψη προσφοράς
+            </CardTitle>
+            <CardDescription>Το σύνολο ενημερώνεται από τα είδη της λίστας.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <SummaryRow label="Είδη" value={String(items.length)} />
+            <SummaryRow label="Κόστος" value={formatCurrency(totals.totalCost)} />
+            <SummaryRow label="Τιμή πώλησης" value={formatCurrency(totals.totalSellPrice)} strong />
+            <SummaryRow label="Κέρδος" value={formatCurrency(totals.profit)} />
+            <SummaryRow label="Περιθώριο" value={`${totals.profitMargin.toFixed(2)}%`} />
+            <Separator />
+            <div className="grid grid-cols-2 gap-3">
+              <Button type="button" onClick={saveQuotation} disabled={isSaving || customer.customerName.trim() === "" || customer.customerPhone.trim() === ""}>
+                <Save className="h-4 w-4" />
+                {isSaving ? "Αποθήκευση..." : "Αποθήκευση"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setItems(getInitialItems(resolvedInitialValues));
+                  setMessage("");
+                }}
+              >
+                <RotateCcw className="h-4 w-4" />
+                Επαναφορά
+              </Button>
+            </div>
+            {message ? <p className="text-sm font-medium text-slate-600">{message}</p> : null}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ScrollText className="h-5 w-5 text-slate-600" />
+              Ανάλυση ειδών
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Είδος</TableHead>
+                  <TableHead className="text-right">Πώληση</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {calculations.flatMap((calculation, calculationIndex) =>
+                  calculation.lineItems.map((item, itemIndex) => (
+                    <TableRow key={`${calculationIndex}-${item.label}-${item.quantityLabel}-${itemIndex}`}>
+                      <TableCell>
+                        <div className="font-medium text-slate-900">{item.label}</div>
+                        <div className="text-xs text-slate-500">{item.quantityLabel}</div>
+                      </TableCell>
+                      <TableCell className="text-right font-medium">{formatCurrency(item.sellPrice)}</TableCell>
+                    </TableRow>
+                  )),
+                )}
+                {calculations.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={2} className="text-slate-500">
+                      Δεν υπάρχουν είδη στην προσφορά.
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </aside>
+
+      <Dialog open={itemDialogOpen} onOpenChange={setItemDialogOpen}>
+        <DialogContent className="max-h-[90vh] max-w-6xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editingItemIndex === null ? "Προσθήκη είδους" : "Επεξεργασία είδους"}</DialogTitle>
+            <DialogDescription>Συμπληρώστε τα στοιχεία του είδους και προσθέστε το στη λίστα.</DialogDescription>
+          </DialogHeader>
+          <QuotationItemEditor
+            materials={materials}
+            paintPrices={paintPrices}
+            initialValues={editingItemIndex === null ? defaultQuotationItemValues : items[editingItemIndex]}
+            onCancel={() => setItemDialogOpen(false)}
+            onSave={saveItem}
+          />
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function CustomerPrompt({
+  initialValues,
+  onContinue,
+  onCancel,
+}: {
+  initialValues: CustomerValues;
+  onContinue: (values: CustomerValues) => void;
+  onCancel?: () => void;
+}) {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<CustomerValues>({
+    resolver: zodResolver(quotationCustomerSchema),
+    defaultValues: initialValues,
+    mode: "onChange",
+  });
+
+  return (
+    <form onSubmit={handleSubmit(onContinue)} className="mx-auto max-w-2xl">
+      <Card>
+        <CardHeader>
+          <CardTitle>Νέα προσφορά</CardTitle>
+          <CardDescription>Συμπληρώστε πρώτα τα στοιχεία του πελάτη για να δημιουργηθεί η κενή λίστα ειδών.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Field label="Πελάτης" error={errors.customerName?.message}>
+            <Input {...register("customerName")} placeholder="Ονοματεπώνυμο" />
+          </Field>
+          <Field label="Τηλέφωνο" error={errors.customerPhone?.message}>
+            <Input {...register("customerPhone")} placeholder="210 0000000" />
+          </Field>
+          <Field label="Email προαιρετικό" error={errors.customerEmail?.message}>
+            <Input {...register("customerEmail")} placeholder="customer@example.com" />
+          </Field>
+          <div className="flex justify-end gap-2 pt-2">
+            {onCancel ? (
+              <Button type="button" variant="outline" onClick={onCancel}>
+                Άκυρο
+              </Button>
+            ) : null}
+            <Button type="submit">
+              Δημιουργία λίστας
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </form>
+  );
+}
+
+function QuotationItemEditor({
+  materials,
+  paintPrices,
+  initialValues,
+  onSave,
+  onCancel,
+}: {
+  materials: PricingMaterial[];
+  paintPrices: PricingPaintPrice[];
+  initialValues: QuotationItemValues;
+  onSave: (values: QuotationItemValues) => void;
+  onCancel: () => void;
+}) {
+  const {
+    control,
+    register,
+    reset,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<QuotationItemValues>({
+    resolver: zodResolver(quotationItemSchema),
+    defaultValues: initialValues,
+    mode: "onChange",
+  });
+  const values = useWatch({ control }) as QuotationItemValues;
+  const calculation = useMemo(() => calculateQuotation(toCalculationInput({ ...initialValues, ...values }), materials, paintPrices), [initialValues, materials, paintPrices, values]);
+
+  useEffect(() => {
+    reset(initialValues);
+  }, [initialValues, reset]);
+
+  return (
+    <form onSubmit={handleSubmit(onSave)} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="space-y-6">
         <Card>
           <CardHeader>
             <CardTitle>Διαστάσεις ρολού</CardTitle>
@@ -208,14 +531,13 @@ export function QuotationForm({ materials, paintPrices }: QuotationFormProps) {
 
         <Card>
           <CardHeader>
-            <CardTitle>Σημειώσεις</CardTitle>
-            <CardDescription>Προαιρετικές παρατηρήσεις για εκτύπωση ή εσωτερική χρήση.</CardDescription>
+            <CardTitle>Σημειώσεις είδους</CardTitle>
           </CardHeader>
           <CardContent>
             <textarea
               {...register("notes")}
               className="min-h-28 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
-              placeholder="Σημειώσεις προσφοράς"
+              placeholder="Σημειώσεις για το συγκεκριμένο είδος"
             />
           </CardContent>
         </Card>
@@ -226,9 +548,8 @@ export function QuotationForm({ materials, paintPrices }: QuotationFormProps) {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Calculator className="h-5 w-5 text-emerald-600" />
-              Σύνοψη υπολογισμού
+              Σύνοψη είδους
             </CardTitle>
-            <CardDescription>Τα σύνολα ενημερώνονται αυτόματα.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <SummaryRow label="Κόστος" value={formatCurrency(calculation.totalCost)} />
@@ -239,51 +560,12 @@ export function QuotationForm({ materials, paintPrices }: QuotationFormProps) {
             <div className="grid grid-cols-2 gap-3">
               <Button type="submit">
                 <Save className="h-4 w-4" />
-                Αποθήκευση
+                Προσθήκη
               </Button>
-              <Button type="button" variant="outline" onClick={resetWithConfirmation}>
-                <RotateCcw className="h-4 w-4" />
-                Καθαρισμός
+              <Button type="button" variant="outline" onClick={onCancel}>
+                Άκυρο
               </Button>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ScrollText className="h-5 w-5 text-slate-600" />
-              Ανάλυση ειδών
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Είδος</TableHead>
-                  <TableHead className="text-right">Πώληση</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {calculation.lineItems.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={2} className="text-slate-500">
-                      Δεν υπάρχουν υπολογισμένα είδη.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  calculation.lineItems.map((item) => (
-                    <TableRow key={`${item.label}-${item.quantityLabel}`}>
-                      <TableCell>
-                        <div className="font-medium text-slate-900">{item.label}</div>
-                        <div className="text-xs text-slate-500">{item.quantityLabel}</div>
-                      </TableCell>
-                      <TableCell className="text-right font-medium">{formatCurrency(item.sellPrice)}</TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
           </CardContent>
         </Card>
       </aside>
@@ -291,7 +573,15 @@ export function QuotationForm({ materials, paintPrices }: QuotationFormProps) {
   );
 }
 
-function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
+function EditableCustomerField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <Field label={label}>
+      <Input value={value} onChange={(event) => onChange(event.target.value)} />
+    </Field>
+  );
+}
+
+function Field({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
       <Label>{label}</Label>
@@ -307,7 +597,7 @@ function SelectField({
   label,
   options,
 }: {
-  control: ReturnType<typeof useForm<QuotationFormValues>>["control"];
+  control: ReturnType<typeof useForm<QuotationItemValues>>["control"];
   name: "rollerType" | "guides" | "boxType" | "strantza" | "motor";
   label: string;
   options: string[];
@@ -342,7 +632,7 @@ function ToggleField({
   name,
   label,
 }: {
-  control: ReturnType<typeof useForm<QuotationFormValues>>["control"];
+  control: ReturnType<typeof useForm<QuotationItemValues>>["control"];
   name: ToggleFieldName;
   label: string;
 }) {

@@ -1,79 +1,123 @@
-import { QuotationForm } from "@/components/forms/quotation-form";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
+import { AppDashboard, type MaterialRow, type OrderRow, type PaintPriceRow, type QuotationRow } from "@/components/dashboard/app-dashboard";
 import { prisma } from "@/lib/database/prisma";
-import { initialMaterials, initialPaintPrices } from "@/lib/pricing/initialPricing";
-import type { PricingMaterial, PricingPaintPrice } from "@/lib/calculations/quotationCalculator";
+import { initialMaterials, initialPaintPrices, type MaterialCategory, type UnitType } from "@/lib/pricing/initialPricing";
+import type { OrderStatus, QuotationStatus } from "@/lib/status";
 
-async function getPricingData(): Promise<{
-  materials: PricingMaterial[];
-  paintPrices: PricingPaintPrice[];
-  source: "database" | "fallback";
+export const dynamic = "force-dynamic";
+
+async function getDashboardData(): Promise<{
+  materials: MaterialRow[];
+  paintPrices: PaintPriceRow[];
+  quotations: QuotationRow[];
+  orders: OrderRow[];
 }> {
   try {
-    const [materials, paintPrices] = await Promise.all([
+    const [materials, paintPrices, quotations, orders] = await Promise.all([
       prisma.productMaterial.findMany({ orderBy: [{ category: "asc" }, { name: "asc" }] }),
       prisma.paintPrice.findMany({ orderBy: { materialName: "asc" } }),
+      prisma.quotation.findMany({
+        include: { items: { orderBy: { sortOrder: "asc" } } },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.order.findMany({
+        where: { quotation: { status: "ACCEPTED" } },
+        orderBy: { acceptedAt: "desc" },
+      }),
     ]);
 
-    if (materials.length > 0 && paintPrices.length > 0) {
-      return {
-        materials: materials.map((material) => ({
-          category: material.category as PricingMaterial["category"],
-          name: material.name,
-          unitType: material.unitType as PricingMaterial["unitType"],
-          costPrice: material.costPrice,
-          sellPrice: material.sellPrice,
-        })),
-        paintPrices,
-        source: "database",
-      };
-    }
+    return {
+      materials:
+        materials.length > 0
+          ? materials.map((material) => ({
+              id: material.id,
+              category: material.category as MaterialCategory,
+              name: material.name,
+              unitType: material.unitType as UnitType,
+              costPrice: material.costPrice,
+              sellPrice: material.sellPrice,
+            }))
+          : initialMaterials.map((material, index) => ({ ...material, id: `initial-material-${index}` })),
+      paintPrices:
+        paintPrices.length > 0
+          ? paintPrices.map((paintPrice) => ({
+              id: paintPrice.id,
+              materialName: paintPrice.materialName,
+              paintCost: paintPrice.paintCost,
+              paintSellPrice: paintPrice.paintSellPrice,
+            }))
+          : initialPaintPrices.map((paintPrice, index) => ({ ...paintPrice, id: `initial-paint-${index}` })),
+      quotations: quotations.map((quotation) => ({
+        id: quotation.id,
+        customerName: quotation.customerName,
+        customerPhone: quotation.customerPhone ?? "",
+        customerEmail: quotation.customerEmail ?? "",
+        widthCm: quotation.widthCm,
+        heightCm: quotation.heightCm,
+        rollerType: quotation.rollerType,
+        painted: quotation.painted,
+        guides: quotation.guides,
+        boxType: quotation.boxType,
+        tamplas: quotation.tamplas,
+        boxCaps: quotation.boxCaps,
+        strantza: quotation.strantza,
+        motor: quotation.motor,
+        remoteSet: quotation.remoteSet,
+        photocells: quotation.photocells,
+        blidoor: quotation.blidoor,
+        switch: quotation.switch,
+        locks: quotation.locks,
+        installationCost: quotation.installationCost,
+        notes: quotation.notes ?? "",
+        items:
+          quotation.items.length > 0
+            ? quotation.items.map((item) => ({
+                widthCm: item.widthCm,
+                heightCm: item.heightCm,
+                rollerType: item.rollerType,
+                painted: item.painted,
+                guides: item.guides,
+                boxType: item.boxType,
+                tamplas: item.tamplas,
+                boxCaps: item.boxCaps,
+                strantza: item.strantza,
+                motor: item.motor,
+                remoteSet: item.remoteSet,
+                photocells: item.photocells,
+                blidoor: item.blidoor,
+                switch: item.switch,
+                locks: item.locks,
+                installationCost: item.installationCost,
+                notes: item.notes ?? "",
+              }))
+            : [],
+        status: quotation.status as QuotationStatus,
+        acceptedAt: quotation.acceptedAt?.toISOString() ?? null,
+        createdAt: quotation.createdAt.toISOString(),
+        updatedAt: quotation.updatedAt.toISOString(),
+        totalCost: quotation.totalCost,
+        totalSellPrice: quotation.totalSellPrice,
+      })),
+      orders: orders.map((order) => ({
+        id: order.id,
+        customerName: order.customerName,
+        acceptedAt: order.acceptedAt.toISOString(),
+        finishedAt: order.finishedAt?.toISOString() ?? null,
+        status: order.status as OrderStatus,
+        notes: order.notes ?? "",
+      })),
+    };
   } catch {
     return {
-      materials: initialMaterials,
-      paintPrices: initialPaintPrices,
-      source: "fallback",
+      materials: initialMaterials.map((material, index) => ({ ...material, id: `initial-material-${index}` })),
+      paintPrices: initialPaintPrices.map((paintPrice, index) => ({ ...paintPrice, id: `initial-paint-${index}` })),
+      quotations: [],
+      orders: [],
     };
   }
-
-  return {
-    materials: initialMaterials,
-    paintPrices: initialPaintPrices,
-    source: "fallback",
-  };
 }
 
 export default async function Home() {
-  const pricingData = await getPricingData();
+  const data = await getDashboardData();
 
-  return (
-    <main className="min-h-screen bg-slate-100">
-      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white px-6 py-5 shadow-sm md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-sm font-medium text-emerald-700">Εφαρμογή κοστολόγησης</p>
-            <h1 className="mt-1 text-3xl font-semibold tracking-normal text-slate-950">Νέα προσφορά γκαραζόπορτας</h1>
-            <p className="mt-2 max-w-3xl text-sm text-slate-500">
-              Καταχώρηση διαστάσεων, υλικών και εξαρτημάτων με άμεσο υπολογισμό κόστους, τιμής πώλησης και κέρδους.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Badge>{pricingData.source === "database" ? "Τιμές από βάση" : "Αρχικές τιμές"}</Badge>
-            <Badge className="bg-slate-100 text-slate-700">Desktop-first</Badge>
-          </div>
-        </header>
-
-        {pricingData.source === "fallback" ? (
-          <Card className="border-amber-200 bg-amber-50">
-            <CardContent className="p-4 text-sm text-amber-900">
-              Οι τιμές εμφανίζονται από τα αρχικά δεδομένα. Εκτελέστε `npm run db:push` και `npm run db:seed` για αποθήκευση στη SQLite βάση.
-            </CardContent>
-          </Card>
-        ) : null}
-
-        <QuotationForm materials={pricingData.materials} paintPrices={pricingData.paintPrices} />
-      </div>
-    </main>
-  );
+  return <AppDashboard {...data} />;
 }
