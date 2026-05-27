@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Edit, Plus, Save, Trash2 } from "lucide-react";
 import { addMaterial, deleteQuotation, saveQuotation, updateOrderNotes, updateOrderStatus, updatePricing, updateQuotationStatus } from "@/app/actions";
@@ -135,14 +135,21 @@ function urgencyClass(urgency: string): string {
 
 export function AppDashboard({ materials, paintPrices, quotations, orders }: AppDashboardProps) {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
   const [quotationRows, setQuotationRows] = useState(quotations);
   const [orderRows, setOrderRows] = useState(orders);
+  const [deletingQuotationIds, setDeletingQuotationIds] = useState<Set<number>>(() => new Set());
   const [createOpen, setCreateOpen] = useState(false);
   const [editingQuotation, setEditingQuotation] = useState<QuotationRow | null>(null);
   const [editingOrder, setEditingOrder] = useState<OrderRow | null>(null);
+  const quotationRequestSequence = useRef<Record<number, number>>({});
+  const orderRequestSequence = useRef<Record<number, number>>({});
 
-  const refresh = () => router.refresh();
+  const refresh = () => {
+    startTransition(() => {
+      router.refresh();
+    });
+  };
 
   useEffect(() => {
     setQuotationRows(quotations);
@@ -153,26 +160,72 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
   }, [orders]);
 
   const handleQuotationStatus = (id: number, status: QuotationStatus) => {
-    startTransition(async () => {
-      const result = await updateQuotationStatus(id, status);
-      if (result.ok && result.data) {
-        const { quotation, orders: updatedOrders } = result.data;
-        setQuotationRows((current) => current.map((currentQuotation) => (currentQuotation.id === id ? quotation : currentQuotation)));
-        setOrderRows(updatedOrders);
+    const previousQuotation = quotationRows.find((quotation) => quotation.id === id);
+    if (!previousQuotation || previousQuotation.status === status) {
+      return;
+    }
+
+    const acceptedAt = status === "ACCEPTED" && !previousQuotation.acceptedAt ? new Date().toISOString() : previousQuotation.acceptedAt;
+    const requestId = (quotationRequestSequence.current[id] ?? 0) + 1;
+    quotationRequestSequence.current[id] = requestId;
+
+    setQuotationRows((current) =>
+      current.map((quotation) => (quotation.id === id ? { ...quotation, status, acceptedAt, updatedAt: new Date().toISOString() } : quotation)),
+    );
+
+    void (async () => {
+      try {
+        const result = await updateQuotationStatus(id, status);
+        if (quotationRequestSequence.current[id] !== requestId) {
+          return;
+        }
+
+        if (result.ok && result.data) {
+          const { quotation, orders: updatedOrders } = result.data;
+          setQuotationRows((current) => current.map((currentQuotation) => (currentQuotation.id === id ? quotation : currentQuotation)));
+          setOrderRows(updatedOrders);
+        } else {
+          setQuotationRows((current) => current.map((quotation) => (quotation.id === id ? previousQuotation : quotation)));
+        }
+      } catch {
+        if (quotationRequestSequence.current[id] === requestId) {
+          setQuotationRows((current) => current.map((quotation) => (quotation.id === id ? previousQuotation : quotation)));
+        }
       }
-      refresh();
-    });
+    })();
   };
 
   const handleOrderStatus = (id: number, status: OrderStatus) => {
-    startTransition(async () => {
-      const result = await updateOrderStatus(id, status);
-      if (result.ok && result.data) {
-        const updatedOrder = result.data;
-        setOrderRows((current) => current.map((order) => (order.id === id ? updatedOrder : order)));
+    const previousOrder = orderRows.find((order) => order.id === id);
+    if (!previousOrder || previousOrder.status === status) {
+      return;
+    }
+
+    const finishedAt = status === "COMPLETED" && !previousOrder.finishedAt ? new Date().toISOString() : previousOrder.finishedAt;
+    const requestId = (orderRequestSequence.current[id] ?? 0) + 1;
+    orderRequestSequence.current[id] = requestId;
+
+    setOrderRows((current) => current.map((order) => (order.id === id ? { ...order, status, finishedAt } : order)));
+
+    void (async () => {
+      try {
+        const result = await updateOrderStatus(id, status);
+        if (orderRequestSequence.current[id] !== requestId) {
+          return;
+        }
+
+        if (result.ok && result.data) {
+          const updatedOrder = result.data;
+          setOrderRows((current) => current.map((order) => (order.id === id ? updatedOrder : order)));
+        } else {
+          setOrderRows((current) => current.map((order) => (order.id === id ? previousOrder : order)));
+        }
+      } catch {
+        if (orderRequestSequence.current[id] === requestId) {
+          setOrderRows((current) => current.map((order) => (order.id === id ? previousOrder : order)));
+        }
       }
-      refresh();
-    });
+    })();
   };
 
   const handleDeleteQuotation = (quotation: QuotationRow) => {
@@ -181,15 +234,25 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
       return;
     }
 
-    startTransition(async () => {
-      const result = await deleteQuotation(quotation.id);
-      if (result.ok && result.data) {
-        const { id, orders: updatedOrders } = result.data;
-        setQuotationRows((current) => current.filter((item) => item.id !== id));
-        setOrderRows(updatedOrders);
+    setDeletingQuotationIds((current) => new Set(current).add(quotation.id));
+
+    void (async () => {
+      try {
+        const result = await deleteQuotation(quotation.id);
+        if (result.ok && result.data) {
+          const { id, orders: updatedOrders } = result.data;
+          setQuotationRows((current) => current.filter((item) => item.id !== id));
+          setOrderRows(updatedOrders);
+        }
+      } finally {
+        setDeletingQuotationIds((current) => {
+          const next = new Set(current);
+          next.delete(quotation.id);
+          return next;
+        });
+        refresh();
       }
-      refresh();
-    });
+    })();
   };
 
   return (
@@ -253,7 +316,6 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
                           <Select
                             value={quotation.status}
                             onValueChange={(value) => handleQuotationStatus(quotation.id, value as QuotationStatus)}
-                            disabled={isPending}
                           >
                             <SelectTrigger className={quotationStatusClass(quotation.status)}>
                               <SelectValue />
@@ -269,13 +331,16 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
+                            <Button variant="outline" size="icon" onClick={() => handleDeleteQuotation(quotation)} disabled={deletingQuotationIds.has(quotation.id)}>
+                              <Trash2 className="h-4 w-4" />
+                              <span className="sr-only">Διαγραφή προσφοράς</span>
+                            </Button>
+                            <Button variant="outline" size="sm" type="button">
+                              PDF
+                            </Button>
                             <Button variant="outline" size="sm" onClick={() => setEditingQuotation(quotation)}>
                               <Edit className="h-4 w-4" />
                               Επεξεργασία
-                            </Button>
-                            <Button variant="outline" size="icon" onClick={() => handleDeleteQuotation(quotation)} disabled={isPending}>
-                              <Trash2 className="h-4 w-4" />
-                              <span className="sr-only">Διαγραφή προσφοράς</span>
                             </Button>
                           </div>
                         </TableCell>
@@ -324,7 +389,7 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
                             {urgency ? <Badge className={urgencyClass(urgency)}>{urgency}</Badge> : <span className="text-slate-400">-</span>}
                           </TableCell>
                           <TableCell>
-                            <Select value={order.status} onValueChange={(value) => handleOrderStatus(order.id, value as OrderStatus)} disabled={isPending}>
+                            <Select value={order.status} onValueChange={(value) => handleOrderStatus(order.id, value as OrderStatus)}>
                               <SelectTrigger className={orderStatusClass(order.status)}>
                                 <SelectValue />
                               </SelectTrigger>

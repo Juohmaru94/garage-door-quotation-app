@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import {
   calculateQuotation,
   formatCurrency,
@@ -130,6 +131,7 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
   });
   const [items, setItems] = useState<QuotationItemValues[]>(() => getInitialItems(resolvedInitialValues));
   const [isCustomerReady, setIsCustomerReady] = useState(mode === "edit");
+  const [selectedItemIndex, setSelectedItemIndex] = useState<number | null>(null);
   const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
   const [itemDialogOpen, setItemDialogOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -143,11 +145,29 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
     });
     setItems(getInitialItems(resolvedInitialValues));
     setIsCustomerReady(mode === "edit");
+    setSelectedItemIndex(null);
     setMessage("");
   }, [mode, resolvedInitialValues]);
 
+  useEffect(() => {
+    if (items.length === 0) {
+      setSelectedItemIndex(null);
+      return;
+    }
+
+    setSelectedItemIndex((current) => {
+      if (current === null || current >= items.length) {
+        return 0;
+      }
+
+      return current;
+    });
+  }, [items]);
+
   const calculations = useMemo(() => calculateItems(items, materials, paintPrices), [items, materials, paintPrices]);
   const totals = useMemo(() => summarizeCalculations(calculations), [calculations]);
+  const selectedCalculation = selectedItemIndex !== null ? calculations[selectedItemIndex] : null;
+  const selectedItem = selectedItemIndex !== null ? items[selectedItemIndex] : null;
 
   const openNewItem = () => {
     setEditingItemIndex(null);
@@ -155,11 +175,13 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
   };
 
   const openExistingItem = (index: number) => {
+    setSelectedItemIndex(index);
     setEditingItemIndex(index);
     setItemDialogOpen(true);
   };
 
   const saveItem = (item: QuotationItemValues) => {
+    const nextSelectedIndex = editingItemIndex ?? items.length;
     setItems((current) => {
       if (editingItemIndex === null) {
         return [...current, item];
@@ -167,11 +189,23 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
 
       return current.map((existingItem, index) => (index === editingItemIndex ? item : existingItem));
     });
+    setSelectedItemIndex(nextSelectedIndex);
     setItemDialogOpen(false);
   };
 
   const removeItem = (index: number) => {
     setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setSelectedItemIndex((current) => {
+      if (current === null) {
+        return null;
+      }
+
+      if (current === index) {
+        return index === 0 ? 0 : index - 1;
+      }
+
+      return current > index ? current - 1 : current;
+    });
   };
 
   const saveQuotation = async () => {
@@ -238,7 +272,7 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
               <span className="sr-only">Προσθήκη είδους</span>
             </Button>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             {items.length === 0 ? (
               <button
                 type="button"
@@ -266,7 +300,14 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
                     const calculation = calculations[index];
 
                     return (
-                      <TableRow key={`${item.rollerType}-${index}`}>
+                      <TableRow
+                        key={`${item.rollerType}-${index}`}
+                        className={cn(
+                          "cursor-pointer transition-colors hover:bg-emerald-50/70",
+                          selectedItemIndex === index && "bg-emerald-50 ring-1 ring-inset ring-emerald-200",
+                        )}
+                        onClick={() => setSelectedItemIndex(index)}
+                      >
                         <TableCell>
                           <div className="font-medium text-slate-900">{item.rollerType}</div>
                           <div className="text-xs text-slate-500">{calculation.lineItems.length} γραμμές ανάλυσης</div>
@@ -275,11 +316,27 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
                         <TableCell className="text-right font-semibold">{formatCurrency(calculation.totalSellPrice)}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
-                            <Button type="button" variant="outline" size="sm" onClick={() => openExistingItem(index)}>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openExistingItem(index);
+                              }}
+                            >
                               <Edit className="h-4 w-4" />
                               Επεξεργασία
                             </Button>
-                            <Button type="button" variant="outline" size="icon" onClick={() => removeItem(index)}>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="icon"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                removeItem(index);
+                              }}
+                            >
                               <Trash2 className="h-4 w-4" />
                               <span className="sr-only">Διαγραφή είδους</span>
                             </Button>
@@ -339,8 +396,15 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
               Ανάλυση ειδών
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <Table>
+          <CardContent className="space-y-4">
+            {selectedItem ? (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-sm font-semibold text-slate-900">{selectedItem.rollerType}</p>
+                <p className="text-xs text-slate-500">{`${selectedItem.widthCm} x ${selectedItem.heightCm} cm`}</p>
+              </div>
+            ) : null}
+            <div className="max-h-[420px] overflow-y-auto">
+              <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Είδος</TableHead>
@@ -348,18 +412,16 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {calculations.flatMap((calculation, calculationIndex) =>
-                  calculation.lineItems.map((item, itemIndex) => (
-                    <TableRow key={`${calculationIndex}-${item.label}-${item.quantityLabel}-${itemIndex}`}>
+                {selectedCalculation?.lineItems.map((item, itemIndex) => (
+                    <TableRow key={`${selectedItemIndex}-${item.label}-${item.quantityLabel}-${itemIndex}`}>
                       <TableCell>
                         <div className="font-medium text-slate-900">{item.label}</div>
                         <div className="text-xs text-slate-500">{item.quantityLabel}</div>
                       </TableCell>
                       <TableCell className="text-right font-medium">{formatCurrency(item.sellPrice)}</TableCell>
                     </TableRow>
-                  )),
-                )}
-                {calculations.length === 0 ? (
+                  ))}
+                {!selectedCalculation ? (
                   <TableRow>
                     <TableCell colSpan={2} className="text-slate-500">
                       Δεν υπάρχουν είδη στην προσφορά.
@@ -368,6 +430,7 @@ export function QuotationForm({ materials, paintPrices, initialValues, mode, onS
                 ) : null}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       </aside>
