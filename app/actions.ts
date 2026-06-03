@@ -33,6 +33,10 @@ export type SavedOrder = {
   notes: string;
 };
 
+export type SavedMaterial = PricingMaterial & {
+  id: string;
+};
+
 export type QuotationMutationData = {
   quotation: SavedQuotation;
   orders: SavedOrder[];
@@ -70,6 +74,10 @@ const addMaterialSchema = z.object({
   costPrice: z.number().min(0),
   sellPrice: z.number().min(0),
 });
+
+function isPrismaKnownError(error: unknown): error is { code: string } {
+  return typeof error === "object" && error !== null && "code" in error && typeof (error as { code?: unknown }).code === "string";
+}
 
 async function getPricingData(): Promise<{
   materials: PricingMaterial[];
@@ -392,7 +400,7 @@ export async function updateOrderStatus(id: number, status: OrderStatus): Promis
     where: { id },
     data: {
       status,
-      finishedAt: status === "COMPLETED" && !existing.finishedAt ? new Date() : existing.finishedAt,
+      finishedAt: status === "COMPLETED" ? existing.finishedAt ?? new Date() : null,
     },
   });
 
@@ -400,14 +408,14 @@ export async function updateOrderStatus(id: number, status: OrderStatus): Promis
   return { ok: true, message: "Η παραγγελία ενημερώθηκε.", data: serializeOrder(order) };
 }
 
-export async function updateOrderNotes(id: number, notes: string): Promise<ActionResult> {
-  await prisma.order.update({
+export async function updateOrderNotes(id: number, notes: string): Promise<ActionResult<SavedOrder>> {
+  const order = await prisma.order.update({
     where: { id },
     data: { notes: notes.trim() || null },
   });
 
   revalidatePath("/");
-  return { ok: true, message: "Οι σημειώσεις παραγγελίας αποθηκεύτηκαν." };
+  return { ok: true, message: "Οι σημειώσεις παραγγελίας αποθηκεύτηκαν.", data: serializeOrder(order) };
 }
 
 export async function updatePricing(input: {
@@ -491,17 +499,63 @@ export async function updatePricing(input: {
   return { ok: true, message: "Οι τιμές αποθηκεύτηκαν." };
 }
 
-export async function addMaterial(input: z.infer<typeof addMaterialSchema>): Promise<ActionResult> {
+export async function addMaterial(input: z.infer<typeof addMaterialSchema>): Promise<ActionResult<SavedMaterial>> {
   const parsed = addMaterialSchema.safeParse(input);
 
   if (!parsed.success) {
     return { ok: false, message: "Ελέγξτε τα στοιχεία του υλικού." };
   }
 
-  await prisma.productMaterial.create({
-    data: parsed.data,
-  });
+  try {
+    const material = await prisma.productMaterial.create({
+      data: parsed.data,
+    });
+
+    revalidatePath("/");
+    return {
+      ok: true,
+      message: "Το υλικό προστέθηκε.",
+      data: {
+        id: material.id,
+        category: material.category as MaterialCategory,
+        name: material.name,
+        unitType: material.unitType as UnitType,
+        costPrice: material.costPrice,
+        sellPrice: material.sellPrice,
+      },
+    };
+  } catch (error) {
+    if (isPrismaKnownError(error) && error.code === "P2002") {
+      return { ok: false, message: "Υπάρχει ήδη υλικό με αυτό το όνομα στην ίδια κατηγορία." };
+    }
+
+    return { ok: false, message: "Δεν ήταν δυνατή η προσθήκη του υλικού." };
+  }
+}
+
+export async function deleteMaterial(id: string): Promise<ActionResult<{ id: string }>> {
+  const initialMaterialPrefix = "initial-material-";
+
+  if (id.startsWith(initialMaterialPrefix)) {
+    const index = Number(id.replace(initialMaterialPrefix, ""));
+
+    if (!Number.isInteger(index) || !initialMaterials[index]) {
+      return { ok: false, message: "Το υλικό δεν βρέθηκε." };
+    }
+
+    await prisma.productMaterial.createMany({
+      data: initialMaterials.filter((_, materialIndex) => materialIndex !== index),
+    });
+  } else {
+    const existing = await prisma.productMaterial.findUnique({ where: { id }, select: { id: true } });
+
+    if (!existing) {
+      return { ok: false, message: "Το υλικό δεν βρέθηκε." };
+    }
+
+    await prisma.productMaterial.delete({ where: { id } });
+  }
 
   revalidatePath("/");
-  return { ok: true, message: "Το υλικό προστέθηκε." };
+  return { ok: true, message: "Το υλικό διαγράφηκε.", data: { id } };
 }

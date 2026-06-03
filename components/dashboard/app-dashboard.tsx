@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Edit, Plus, Save, Trash2 } from "lucide-react";
-import { addMaterial, deleteQuotation, saveQuotation, updateOrderNotes, updateOrderStatus, updatePricing, updateQuotationStatus } from "@/app/actions";
+import { addMaterial, deleteMaterial, deleteQuotation, saveQuotation, updateOrderNotes, updateOrderStatus, updatePricing, updateQuotationStatus } from "@/app/actions";
 import { QuotationForm } from "@/components/forms/quotation-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -201,7 +201,7 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
       return;
     }
 
-    const finishedAt = status === "COMPLETED" && !previousOrder.finishedAt ? new Date().toISOString() : previousOrder.finishedAt;
+    const finishedAt = status === "COMPLETED" ? previousOrder.finishedAt ?? new Date().toISOString() : null;
     const requestId = (orderRequestSequence.current[id] ?? 0) + 1;
     orderRequestSequence.current[id] = requestId;
 
@@ -365,7 +365,7 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
                     <TableHead>Date Finished</TableHead>
                     <TableHead>Urgency</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Σημειώσεις</TableHead>
+                    <TableHead className="text-right">Notes</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -404,7 +404,7 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
                           </TableCell>
                           <TableCell className="text-right">
                             <Button variant="outline" size="sm" onClick={() => setEditingOrder(order)}>
-                              Σημειώσεις
+                              Notes
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -481,7 +481,15 @@ export function AppDashboard({ materials, paintPrices, quotations, orders }: App
         </DialogContent>
       </Dialog>
 
-      <OrderNotesDialog order={editingOrder} onClose={() => setEditingOrder(null)} onRefresh={refresh} />
+      <OrderNotesDialog
+        order={editingOrder}
+        onClose={() => setEditingOrder(null)}
+        onSaved={(updatedOrder) => {
+          setOrderRows((current) => current.map((order) => (order.id === updatedOrder.id ? updatedOrder : order)));
+          setEditingOrder(null);
+          refresh();
+        }}
+      />
     </main>
   );
 }
@@ -513,7 +521,7 @@ function toQuotationFormValues(quotation: QuotationRow): QuotationFormValues {
   };
 }
 
-function OrderNotesDialog({ order, onClose, onRefresh }: { order: OrderRow | null; onClose: () => void; onRefresh: () => void }) {
+function OrderNotesDialog({ order, onClose, onSaved }: { order: OrderRow | null; onClose: () => void; onSaved: (order: OrderRow) => void }) {
   const [notes, setNotes] = useState(order?.notes ?? "");
   const [message, setMessage] = useState("");
 
@@ -547,9 +555,8 @@ function OrderNotesDialog({ order, onClose, onRefresh }: { order: OrderRow | nul
                 }
                 const result = await updateOrderNotes(order.id, notes);
                 setMessage(result.message);
-                if (result.ok) {
-                  onClose();
-                  onRefresh();
+                if (result.ok && result.data) {
+                  onSaved(result.data);
                 }
               }}
             >
@@ -570,6 +577,7 @@ function MaterialEditor({ materials, paintPrices, onRefresh }: { materials: Mate
   const [addOpen, setAddOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [activeCategory, setActiveCategory] = useState<MaterialCategory | "PAINT">("ROLLER_CURTAIN");
+  const [deletingMaterialIds, setDeletingMaterialIds] = useState<Set<string>>(() => new Set());
 
   const visibleMaterials = useMemo(
     () => (activeCategory === "PAINT" ? [] : materialDrafts.filter((material) => material.category === activeCategory)),
@@ -587,6 +595,32 @@ function MaterialEditor({ materials, paintPrices, onRefresh }: { materials: Mate
 
   const updatePaintDraft = (id: string, field: "paintCost" | "paintSellPrice", value: number) => {
     setPaintDrafts((current) => current.map((paintPrice) => (paintPrice.id === id ? { ...paintPrice, [field]: value } : paintPrice)));
+  };
+
+  const handleDeleteMaterial = async (material: MaterialRow) => {
+    const shouldDelete = window.confirm(`Να διαγραφεί το υλικό ${material.name};`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    setDeletingMaterialIds((current) => new Set(current).add(material.id));
+
+    try {
+      const result = await deleteMaterial(material.id);
+      setMessage(result.message);
+
+      if (result.ok && result.data) {
+        const deletedMaterialId = result.data.id;
+        setMaterialDrafts((current) => current.filter((item) => item.id !== deletedMaterialId));
+        onRefresh();
+      }
+    } finally {
+      setDeletingMaterialIds((current) => {
+        const next = new Set(current);
+        next.delete(material.id);
+        return next;
+      });
+    }
   };
 
   const saveAll = async () => {
@@ -657,6 +691,7 @@ function MaterialEditor({ materials, paintPrices, onRefresh }: { materials: Mate
                 {activeCategory !== "PAINT" ? <TableHead>Μονάδα</TableHead> : null}
                 <TableHead>Κόστος</TableHead>
                 <TableHead>Τιμή Πώλησης</TableHead>
+                {activeCategory !== "PAINT" ? <TableHead className="text-right">Ενέργειες</TableHead> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -706,6 +741,20 @@ function MaterialEditor({ materials, paintPrices, onRefresh }: { materials: Mate
                           onChange={(event) => updateMaterialDraft(material.id, "sellPrice", Number(event.target.value))}
                         />
                       </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => {
+                            void handleDeleteMaterial(material);
+                          }}
+                          disabled={deletingMaterialIds.has(material.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          <span className="sr-only">Διαγραφή υλικού</span>
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))}
             </TableBody>
@@ -714,28 +763,55 @@ function MaterialEditor({ materials, paintPrices, onRefresh }: { materials: Mate
         </CardContent>
       </Card>
 
-      <AddMaterialDialog open={addOpen} onOpenChange={setAddOpen} onRefresh={onRefresh} />
+      <AddMaterialDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onAdded={(material) => {
+          setMaterialDrafts((current) => [...current.filter((item) => item.id !== material.id), material]);
+          setActiveCategory(material.category);
+          setMessage("Το υλικό προστέθηκε.");
+          onRefresh();
+        }}
+      />
     </div>
   );
 }
 
-function AddMaterialDialog({ open, onOpenChange, onRefresh }: { open: boolean; onOpenChange: (open: boolean) => void; onRefresh: () => void }) {
+function AddMaterialDialog({
+  open,
+  onOpenChange,
+  onAdded,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAdded: (material: MaterialRow) => void;
+}) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState<MaterialCategory>("ACCESSORY");
   const [unitType, setUnitType] = useState<UnitType>("ITEM");
   const [costPrice, setCostPrice] = useState(0);
   const [sellPrice, setSellPrice] = useState(0);
   const [message, setMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
   const submit = async () => {
-    const result = await addMaterial({ name, category, unitType, costPrice, sellPrice });
-    setMessage(result.message);
-    if (result.ok) {
-      setName("");
-      setCostPrice(0);
-      setSellPrice(0);
-      onOpenChange(false);
-      onRefresh();
+    setIsSaving(true);
+
+    try {
+      const result = await addMaterial({ name, category, unitType, costPrice, sellPrice });
+      setMessage(result.message);
+
+      if (result.ok && result.data) {
+        setName("");
+        setCostPrice(0);
+        setSellPrice(0);
+        onOpenChange(false);
+        onAdded(result.data);
+      }
+    } catch {
+      setMessage("Δεν ήταν δυνατή η προσθήκη του υλικού.");
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -784,8 +860,8 @@ function AddMaterialDialog({ open, onOpenChange, onRefresh }: { open: boolean; o
           <Field label="Τιμή Πώλησης">
             <Input type="number" min="0" step="0.01" value={sellPrice} onChange={(event) => setSellPrice(Number(event.target.value))} />
           </Field>
-          <Button type="button" onClick={submit}>
-            Αποθήκευση
+          <Button type="button" onClick={submit} disabled={isSaving}>
+            {isSaving ? "Αποθήκευση..." : "Αποθήκευση"}
           </Button>
           {message ? <p className="text-sm text-slate-600">{message}</p> : null}
         </div>
